@@ -1,2 +1,16 @@
 #ignore .venv:
 .venv/
+
+# Ignore generated raster and CSV outputs
+*.tif
+*.csv
+
+# Ignore folders with generated CSV/TIF outputs
+/daily_snapshots/
+/predictions_csv/
+/satellite_overlays/
+/daily_maps10k/
+/daily_maps/
+/smooth_maps_individual/
+/water_intensity_maps/
+/__pycache__/

@@ -1,5 +1,6 @@
 """
 Graph Neural Network for Chlorophyll Spatial-Temporal Forecasting
+MODIFIED: Reads from daily snapshot files instead of single CSV
 Implements GraphConv + LSTM for reservoir chlorophyll prediction
 """
 
@@ -15,14 +16,23 @@ import networkx as nx
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import json
+import glob
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
 class ChlorophyllGraphDataset:
     """Prepare chlorophyll time series data for Graph Neural Networks"""
     
-    def __init__(self, data_path="chl_connect_timeseries_2000pts.csv", aoi_path="Area.json"):
-        self.data_path = data_path
+    def __init__(self, data_dir="daily_snapshots", aoi_path="Area.json"):
+        """
+        Initialize dataset loader
+        
+        Args:
+            data_dir: Directory containing daily snapshot CSV files
+            aoi_path: Path to area of interest JSON file
+        """
+        self.data_dir = data_dir
         self.aoi_path = aoi_path
         self.data = None
         self.pixel_coords = None
@@ -31,11 +41,35 @@ class ChlorophyllGraphDataset:
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         
     def load_data(self):
-        """Load and prepare time series data"""
-        print("📊 Loading chlorophyll time series data...")
+        """Load and prepare time series data from daily snapshot files"""
+        print("📊 Loading chlorophyll time series data from daily snapshots...")
+        print(f"   Reading from directory: {self.data_dir}/")
         
-        self.data = pd.read_csv(self.data_path)
+        # Get all CSV files in the directory
+        csv_pattern = os.path.join(self.data_dir, "snapshot_*.csv")
+        csv_files = sorted(glob.glob(csv_pattern))
+        
+        if len(csv_files) == 0:
+            raise FileNotFoundError(f"No snapshot files found in {self.data_dir}/")
+        
+        print(f"   Found {len(csv_files)} daily snapshot files")
+        
+        # Read and concatenate all files
+        dataframes = []
+        for i, csv_file in enumerate(csv_files):
+            if i % 10 == 0:
+                print(f"   Loading file {i+1}/{len(csv_files)}...", end='\r')
+            df = pd.read_csv(csv_file)
+            dataframes.append(df)
+        
+        print(f"   Loading file {len(csv_files)}/{len(csv_files)}... Done!")
+        
+        # Concatenate all dataframes
+        self.data = pd.concat(dataframes, ignore_index=True)
         self.data['date'] = pd.to_datetime(self.data['date'])
+        
+        # Sort by date
+        self.data = self.data.sort_values('date').reset_index(drop=True)
         
         # Get unique pixel coordinates
         self.pixel_coords = self.data[['lon', 'lat']].drop_duplicates().reset_index(drop=True)
@@ -43,6 +77,7 @@ class ChlorophyllGraphDataset:
         
         print(f"✅ Loaded {len(self.data)} observations from {len(self.pixel_coords)} pixels")
         print(f"📅 Date range: {self.data['date'].min()} to {self.data['date'].max()}")
+        print(f"📅 Unique dates: {self.data['date'].dt.date.nunique()}")
         
         return self.data
     
@@ -266,13 +301,27 @@ class GraphChlorophyllNet(nn.Module):
 class GraphChlorophyllForecaster:
     """Main forecasting class that orchestrates the entire pipeline"""
     
-    def __init__(self, data_path="chl_connect_timeseries_2000pts.csv", aoi_path="Area.json"):
-        self.data_path = data_path
+    def __init__(self, data_dir="daily_snapshots", aoi_path="Area.json"):
+        """
+        Initialize forecaster
+        
+        Args:
+            data_dir: Directory containing daily snapshot CSV files
+            aoi_path: Path to area of interest JSON file
+        """
+        self.data_dir = data_dir
         self.aoi_path = aoi_path
-        self.dataset = ChlorophyllGraphDataset(data_path, aoi_path)
+        self.dataset = ChlorophyllGraphDataset(data_dir, aoi_path)
         self.model = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"🔧 Using device: {self.device}")
+        
+        if torch.cuda.is_available():
+            print(f"   GPU: {torch.cuda.get_device_name(0)}")
+            print(f"   CUDA Version: {torch.version.cuda}")
+            print(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            print("   ⚠️ GPU not available, using CPU (this will be slower)")
         
     def prepare_data(self, sequence_length=8, prediction_steps=6):
         """Prepare all data for training"""
@@ -515,6 +564,8 @@ class GraphChlorophyllForecaster:
         """Run the complete graph neural network analysis"""
         print("🚀 GRAPH NEURAL NETWORK CHLOROPHYLL FORECASTING")
         print("=" * 60)
+        print("READING FROM DAILY SNAPSHOT FILES")
+        print("=" * 60)
         
         # Prepare data
         self.prepare_data()
@@ -545,8 +596,12 @@ class GraphChlorophyllForecaster:
         return predictions, coords
 
 def main():
-    """Run graph neural network analysis"""
-    forecaster = GraphChlorophyllForecaster("chl_connect_timeseries_2000pts.csv")
+    """Run graph neural network analysis with daily snapshot files"""
+    print("\n" + "="*60)
+    print("MODIFIED VERSION - READS FROM DAILY SNAPSHOTS")
+    print("="*60 + "\n")
+    
+    forecaster = GraphChlorophyllForecaster(data_dir="daily_snapshots")
     predictions, coords = forecaster.run_complete_analysis()
     return predictions, coords
 
