@@ -1,7 +1,6 @@
 """
 Graph Neural Network for Chlorophyll Spatial-Temporal Forecasting
-MODIFIED: Reads from daily snapshot files instead of single CSV
-Implements GraphConv + LSTM for reservoir chlorophyll prediction
+REFACTORED: Generates satellite overlay maps using CompleteMapGenerator approach
 """
 
 import torch
@@ -9,12 +8,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-from torch_geometric.nn import GCNConv, global_mean_pool
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.nn import GCNConv
+from torch_geometric.data import Data
 import matplotlib.pyplot as plt
-import networkx as nx
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, r2_score
+import geopandas as gpd
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
+import rasterio
+from rasterio.transform import from_origin
+from rasterio.features import rasterize
+import contextily as ctx
 import json
 import glob
 import os
@@ -298,6 +302,160 @@ class GraphChlorophyllNet(nn.Module):
         
         return predictions
 
+
+class SatelliteMapGenerator:
+    """
+    Generates satellite overlay maps using the same approach as CompleteMapGenerator
+    """
+    
+    def __init__(self, aoi_path="Area.json"):
+        self.aoi_path = aoi_path
+        self.gdf = None
+        self.bounds = None
+        self.crs = "EPSG:4326"
+        
+        # Load boundaries
+        self.load_boundaries()
+    
+    def load_boundaries(self):
+        """Load vector boundaries"""
+        if os.path.exists(self.aoi_path):
+            self.gdf = gpd.read_file(self.aoi_path)
+            self.bounds = self.gdf.total_bounds  # [minx, miny, maxx, maxy]
+            print(f"✅ Loaded Boundaries: {self.aoi_path}")
+        else:
+            raise FileNotFoundError(f"❌ Could not find {self.aoi_path}")
+    
+    def generate_smooth_surface(self, points, values, width=1500):
+        """
+        Generate high-res smooth surface from point data
+        
+        Args:
+            points: numpy array of shape (n, 2) with [lon, lat] coordinates
+            values: numpy array of shape (n,) with chlorophyll values
+            width: width of output image in pixels
+            
+        Returns:
+            grid_img: 2D numpy array with smooth chlorophyll surface
+            transform: rasterio transform for georeferencing
+            extent: [minx, maxx, miny, maxy] for matplotlib plotting
+        """
+        minx, miny, maxx, maxy = self.bounds
+        pixel_size = (maxx - minx) / width
+        
+        # Calculate height
+        height = int(np.ceil((maxy - miny) / pixel_size))
+        actual_miny = maxy - (height * pixel_size)
+        
+        # Save dimensions
+        shape = (height, width)
+        extent = [minx, maxx, actual_miny, maxy]
+        
+        # Generate grid centers
+        grid_x = np.linspace(minx + pixel_size/2, maxx - pixel_size/2, width)
+        grid_y = np.linspace(actual_miny + pixel_size/2, maxy - pixel_size/2, height)
+        grid_x_mesh, grid_y_mesh = np.meshgrid(grid_x, grid_y)
+        
+        # 1. Cubic interpolation (structure)
+        grid_cubic = griddata(points, values, (grid_x_mesh, grid_y_mesh), method='cubic')
+        
+        # 2. Nearest neighbor (filler)
+        grid_near = griddata(points, values, (grid_x_mesh, grid_y_mesh), method='nearest')
+        
+        # 3. Combine
+        grid_final = np.where(np.isnan(grid_cubic), grid_near, grid_cubic)
+        
+        # 4. Flip & blur (organic fluid look)
+        grid_img = np.flipud(grid_final)
+        grid_img = gaussian_filter(grid_img, sigma=2)
+        
+        # 5. Apply water mask
+        transform = from_origin(minx, maxy, pixel_size, pixel_size)
+        
+        mask = rasterize(
+            [(geom, 1) for geom in self.gdf.geometry],
+            out_shape=shape,
+            transform=transform,
+            fill=0,
+            default_value=1,
+            dtype=np.uint8
+        )
+        
+        # Set land to NaN
+        grid_img[mask == 0] = np.nan
+        
+        return grid_img, transform, extent, shape
+    
+    def save_satellite_overlay_map(self, points, values, output_path, title_suffix=""):
+        """
+        Generate and save a satellite overlay map
+        
+        Args:
+            points: numpy array of shape (n, 2) with [lon, lat] coordinates
+            values: numpy array of shape (n,) with chlorophyll values
+            output_path: path to save the PNG file
+            title_suffix: optional suffix to add to the title (e.g., "Step 1")
+        """
+        print(f"🛰️ Generating satellite overlay map: {output_path}")
+        
+        # Generate smooth surface
+        grid_img, transform, extent, shape = self.generate_smooth_surface(points, values, width=1500)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 12))
+        
+        # 1. Plot the smooth raster (alpha=0.7 for semi-transparency)
+        im = ax.imshow(
+            grid_img,
+            extent=extent,
+            origin='upper',
+            cmap='RdYlGn_r',
+            alpha=0.7,
+            zorder=2  # On top of map
+        )
+        
+        # 2. Add vector outline
+        self.gdf.plot(
+            ax=ax,
+            facecolor='none',
+            edgecolor='black',
+            linewidth=0.5,
+            alpha=0.5,
+            zorder=3
+        )
+        
+        # 3. Add satellite basemap using Contextily
+        try:
+            ctx.add_basemap(
+                ax,
+                crs=self.crs,
+                source=ctx.providers.Esri.WorldImagery,
+                zoom=13
+            )
+            print("   ✓ Added Esri World Imagery")
+        except Exception as e:
+            print(f"   ⚠️ Could not fetch tiles: {e}")
+        
+        # Formatting
+        if title_suffix:
+            title = f"Predicted Chlorophyll-a Intensity - {title_suffix}"
+        else:
+            title = "Predicted Chlorophyll-a Intensity"
+        
+        ax.set_title(title, fontweight='bold', fontsize=14)
+        ax.axis('off')  # Clean look
+        
+        # Colorbar
+        cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
+        cbar.set_label('mg/m³')
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        print(f"✅ Saved: {output_path}")
+
+
 class GraphChlorophyllForecaster:
     """Main forecasting class that orchestrates the entire pipeline"""
     
@@ -468,7 +626,7 @@ class GraphChlorophyllForecaster:
         plt.grid(True, alpha=0.3)
         plt.yscale('log')
         plt.savefig('graph_training_history.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
         
         print("✅ Training history saved: graph_training_history.png")
     
@@ -481,7 +639,7 @@ class GraphChlorophyllForecaster:
         
         self.model.eval()
         
-        # Use the last sequence from training data
+        # Use the last sequence from validation data
         last_data = self.val_data[-1].to(self.device)
         
         with torch.no_grad():
@@ -567,67 +725,53 @@ class GraphChlorophyllForecaster:
         
         return output_dir
     
-    def visualize_future_maps(self, predictions, coords, save_path="graph_future_maps.png"):
-        """Create publication-quality future prediction maps"""
-        print("🎨 Creating future prediction maps...")
+    def generate_satellite_overlay_maps(self, predictions, coords, output_dir='satellite_maps'):
+        """
+        Generate satellite overlay maps for each prediction time step
+        Uses the same approach as CompleteMapGenerator
+        
+        Args:
+            predictions: Prediction array, shape (n_pixels, n_timesteps)
+            coords: Coordinate array, shape (n_pixels, 2) [lon, lat]
+            output_dir: Directory to save the map images
+        """
+        print(f"\n🛰️ Generating satellite overlay maps...")
+        print("=" * 60)
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Initialize map generator
+        map_gen = SatelliteMapGenerator(aoi_path=self.aoi_path)
         
         n_steps = predictions.shape[1]
         
-        # Create subplot grid
-        cols = 3
-        rows = (n_steps + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(15, 5*rows))
-        
-        if rows == 1:
-            axes = axes.reshape(1, -1)
-        
+        # Generate one map per time step
         for step in range(n_steps):
-            row, col = step // cols, step % cols
-            ax = axes[row, col] if rows > 1 else axes[col]
-            
             # Get predictions for this time step
             step_predictions = predictions[:, step]
             
-            # Create scatter plot
-            scatter = ax.scatter(
-                coords[:, 0], coords[:, 1],
-                c=step_predictions,
-                cmap='RdYlGn_r',
-                s=60, alpha=0.8,
-                vmin=predictions.min(),
-                vmax=predictions.max()
+            # Generate output filename
+            output_path = os.path.join(output_dir, f'satellite_overlay_step_{step+1}.png')
+            
+            # Generate map
+            map_gen.save_satellite_overlay_map(
+                points=coords,
+                values=step_predictions,
+                output_path=output_path,
+                title_suffix=f"Future Step {step+1}"
             )
-            
-            ax.set_xlabel('Longitude')
-            ax.set_ylabel('Latitude')
-            ax.set_title(f'Future Month {step + 1}')
-            ax.grid(True, alpha=0.3)
-            
-            # Add colorbar
-            plt.colorbar(scatter, ax=ax, label='Chlorophyll-a (mg/m³)')
         
-        # Hide empty subplots
-        for step in range(n_steps, rows * cols):
-            if rows > 1:
-                row, col = step // cols, step % cols
-                axes[row, col].axis('off')
-            else:
-                if step < len(axes):
-                    axes[step].axis('off')
+        print("=" * 60)
+        print(f"✅ Generated {n_steps} satellite overlay maps in '{output_dir}/'")
         
-        plt.suptitle('Graph Neural Network - Future Chlorophyll Predictions\nTrês Marias Reservoir', 
-                    fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        print(f"✅ Future maps saved: {save_path}")
+        return output_dir
     
     def run_complete_analysis(self):
         """Run the complete graph neural network analysis"""
         print("🚀 GRAPH NEURAL NETWORK CHLOROPHYLL FORECASTING")
         print("=" * 60)
-        print("READING FROM DAILY SNAPSHOT FILES")
+        print("SATELLITE OVERLAY MAP GENERATION")
         print("=" * 60)
         
         # Prepare data
@@ -643,28 +787,8 @@ class GraphChlorophyllForecaster:
         # Export predictions to CSV
         self.export_predictions_to_csv(predictions, coords)
         
-        # Visualize discrete results
-        self.visualize_future_maps(predictions, coords)
-        
-        # Generate smooth interpolated maps
-        print("\n🎨 Generating smooth interpolated maps...")
-        smooth_maps_generated = False
-        try:
-            from smooth_interpolated_visualization import add_smooth_visualization_to_forecaster
-            
-            # Add smooth visualization
-            forecaster_with_smooth = add_smooth_visualization_to_forecaster(self)
-            
-            # Generate smooth maps
-            forecaster_with_smooth.visualize_smooth_future_maps()
-            
-            print("✅ Smooth interpolated maps generated!")
-            smooth_maps_generated = True
-        except ImportError:
-            print("⚠️ Smooth visualization module not found. Skipping smooth maps.")
-            print("   (Place 'smooth_interpolated_visualization.py' in the same directory)")
-        except Exception as e:
-            print(f"⚠️ Could not generate smooth maps: {e}")
+        # Generate satellite overlay maps (one per time step)
+        self.generate_satellite_overlay_maps(predictions, coords)
         
         # Calculate some statistics
         print(f"\n📊 PREDICTION STATISTICS:")
@@ -673,7 +797,7 @@ class GraphChlorophyllForecaster:
         print(f"   Chlorophyll range: {predictions.min():.2f} - {predictions.max():.2f} mg/m³")
         print(f"   Mean prediction: {predictions.mean():.2f} mg/m³")
         
-        print(f"\n🎉 GRAPH NEURAL NETWORK ANALYSIS COMPLETE!")
+        print(f"\n🎉 ANALYSIS COMPLETE!")
         print("=" * 60)
         print("Generated files:")
         print("=" * 60)
@@ -686,26 +810,25 @@ class GraphChlorophyllForecaster:
         print("  ✓ predictions_csv/prediction_step_2.csv")
         print("  ✓ ... (one file per time step)")
         print("  ✓ predictions_csv/all_predictions_combined.csv")
-        print("\nPrediction visualizations (PNG):")
-        print("  ✓ graph_future_maps.png (discrete point predictions)")
-        if smooth_maps_generated:
-            print("  ✓ smooth_future_maps.png (smooth interpolated - combined)")
-            print("  ✓ discrete_vs_smooth_comparison.png (comparison)")
-            print("  ✓ smooth_maps_individual/ (individual smooth maps per time step)")
-            print("  ✓ satellite_overlays/ (satellite imagery overlays per time step)")
+        print("\nSatellite overlay maps (PNG):")
+        print("  ✓ satellite_maps/satellite_overlay_step_1.png")
+        print("  ✓ satellite_maps/satellite_overlay_step_2.png")
+        print("  ✓ ... (one map per time step)")
         print("=" * 60)
         
         return predictions, coords
 
+
 def main():
-    """Run graph neural network analysis with daily snapshot files"""
+    """Run graph neural network analysis with satellite overlay maps"""
     print("\n" + "="*60)
-    print("MODIFIED VERSION - READS FROM DAILY SNAPSHOTS")
+    print("REFACTORED VERSION - SATELLITE OVERLAY MAPS")
     print("="*60 + "\n")
     
     forecaster = GraphChlorophyllForecaster(data_dir="daily_snapshots")
     predictions, coords = forecaster.run_complete_analysis()
     return predictions, coords
+
 
 if __name__ == "__main__":
     predictions, coords = main()
