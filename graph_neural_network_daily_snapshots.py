@@ -630,9 +630,163 @@ class GraphChlorophyllForecaster:
         
         print("✅ Training history saved: graph_training_history.png")
     
+    def evaluate_on_validation_set(self):
+        """
+        Evaluate model performance on validation set for thesis metrics
+        Returns actual vs predicted values for analysis
+        """
+        print("\n🎯 Evaluating model on validation set...")
+        
+        if self.model is None:
+            raise ValueError("Model not trained yet!")
+        
+        self.model.eval()
+        
+        all_predictions = []
+        all_actuals = []
+        
+        with torch.no_grad():
+            for data in self.val_data:
+                data = data.to(self.device)
+                predictions = self.model(data)  # [num_nodes, prediction_steps]
+                
+                all_predictions.append(predictions.cpu().numpy())
+                all_actuals.append(data.y.cpu().numpy())
+        
+        # Concatenate all validation batches
+        # Shape: [n_validation_samples, n_pixels, n_timesteps]
+        predictions_array = np.array(all_predictions)
+        actuals_array = np.array(all_actuals)
+        
+        # Denormalize both predictions and actuals
+        pred_shape = predictions_array.shape
+        act_shape = actuals_array.shape
+        
+        flat_pred = predictions_array.reshape(-1, 1)
+        flat_act = actuals_array.reshape(-1, 1)
+        
+        denorm_pred = self.dataset.scaler.inverse_transform(flat_pred)
+        denorm_act = self.dataset.scaler.inverse_transform(flat_act)
+        
+        final_predictions = denorm_pred.reshape(pred_shape)
+        final_actuals = denorm_act.reshape(act_shape)
+        
+        print(f"✅ Evaluation complete:")
+        print(f"   Validation samples: {len(self.val_data)}")
+        print(f"   Predictions shape: {final_predictions.shape}")
+        print(f"   Range - Predicted: [{final_predictions.min():.2f}, {final_predictions.max():.2f}] mg/m³")
+        print(f"   Range - Actual: [{final_actuals.min():.2f}, {final_actuals.max():.2f}] mg/m³")
+        
+        return final_actuals, final_predictions
+    
+    def calculate_thesis_metrics(self, y_true, y_pred):
+        """
+        Calculate comprehensive thesis metrics using evaluation module
+        
+        Args:
+            y_true: Actual values [samples, pixels, timesteps]
+            y_pred: Predicted values [samples, pixels, timesteps]
+            
+        Returns:
+            evaluator: ThesisEvaluator object with all metrics
+        """
+        print("\n📊 Calculating thesis metrics...")
+        
+        # Import evaluation module
+        from thesis_evaluation import ThesisEvaluator
+        
+        # Flatten first dimension (samples) since we want overall metrics
+        # Result shape: [samples * pixels, timesteps]
+        y_true_flat = y_true.reshape(-1, y_true.shape[-1])
+        y_pred_flat = y_pred.reshape(-1, y_pred.shape[-1])
+        
+        # Create evaluator
+        evaluator = ThesisEvaluator()
+        
+        # Calculate all metrics
+        timestep_names = [f"Step {i+1}" for i in range(y_true.shape[-1])]
+        overall_metrics, per_timestep_metrics = evaluator.calculate_all_metrics(
+            y_true_flat, y_pred_flat, timestep_names
+        )
+        
+        # Print summary
+        evaluator.print_metrics_summary()
+        
+        # Export LaTeX tables
+        evaluator.export_latex_table('thesis_results/metrics_table.tex')
+        evaluator.export_per_timestep_latex('thesis_results/per_timestep_metrics.tex')
+        
+        # Water quality classification
+        print("\n" + "="*70)
+        evaluator.evaluate_water_quality_classification(y_true_flat, y_pred_flat)
+        print("="*70)
+        
+        return evaluator
+    
+    def generate_thesis_visualizations(self, y_true, y_pred, evaluator, train_losses=None, val_losses=None):
+        """
+        Generate all thesis visualizations
+        
+        Args:
+            y_true: Actual values [samples, pixels, timesteps]
+            y_pred: Predicted values [samples, pixels, timesteps]
+            evaluator: ThesisEvaluator object with metrics
+            train_losses: Optional training loss history
+            val_losses: Optional validation loss history
+        """
+        print("\n🎨 Generating thesis visualizations...")
+        
+        # Import visualization module
+        from thesis_visualizations import ThesisVisualizations
+        
+        # Create visualizer
+        viz = ThesisVisualizations(output_dir='thesis_figures')
+        
+        # Flatten for plotting
+        y_true_flat = y_true.reshape(-1, y_true.shape[-1])
+        y_pred_flat = y_pred.reshape(-1, y_pred.shape[-1])
+        
+        # 1. Predicted vs Actual
+        viz.plot_predicted_vs_actual(
+            y_true_flat, y_pred_flat, 
+            evaluator.metrics['overall'],
+            save_name='predicted_vs_actual.png'
+        )
+        
+        # 2. Residual analysis
+        viz.plot_residuals(
+            y_true_flat, y_pred_flat,
+            save_name='residual_analysis.png'
+        )
+        
+        # 3. Forecast horizon performance
+        viz.plot_forecast_horizon_performance(
+            evaluator.per_timestep_metrics,
+            save_name='forecast_horizon_performance.png'
+        )
+        
+        # 4. Training history (if available)
+        if train_losses is not None and val_losses is not None:
+            viz.plot_training_history(
+                train_losses, val_losses,
+                save_name='training_history.png'
+            )
+        
+        # 5. Comprehensive summary figure
+        viz.create_summary_figure(
+            y_true_flat, y_pred_flat,
+            evaluator.metrics['overall'],
+            evaluator.per_timestep_metrics,
+            save_name='comprehensive_summary.png'
+        )
+        
+        print("✅ All visualizations generated in thesis_figures/")
+        
+        return viz
+    
     def predict_future_maps(self, steps_ahead=6):
         """Generate future chlorophyll prediction maps"""
-        print(f"🔮 Generating {steps_ahead} future prediction maps...")
+        print(f"\n🔮 Generating {steps_ahead} future prediction maps...")
         
         if self.model is None:
             raise ValueError("Model not trained yet!")
@@ -767,21 +921,56 @@ class GraphChlorophyllForecaster:
         
         return output_dir
     
-    def run_complete_analysis(self):
-        """Run the complete graph neural network analysis"""
+    def run_complete_analysis(self, include_thesis_evaluation=True):
+        """Run the complete graph neural network analysis with thesis evaluation"""
         print("🚀 GRAPH NEURAL NETWORK CHLOROPHYLL FORECASTING")
         print("=" * 60)
-        print("SATELLITE OVERLAY MAP GENERATION")
+        print("WITH THESIS EVALUATION METRICS")
         print("=" * 60)
+        
+        # Create output directories
+        import os
+        os.makedirs('thesis_results', exist_ok=True)
+        os.makedirs('thesis_figures', exist_ok=True)
         
         # Prepare data
         self.prepare_data()
         
         # Build and train model
         self.build_model()
-        self.train_model(epochs=50)
+        train_losses, val_losses = self.train_model(epochs=50)
         
-        # Generate predictions
+        # ============ THESIS EVALUATION ============
+        if include_thesis_evaluation:
+            print("\n" + "=" * 60)
+            print("THESIS EVALUATION - CALCULATING PERFORMANCE METRICS")
+            print("=" * 60)
+            
+            # Evaluate on validation set
+            y_true, y_pred = self.evaluate_on_validation_set()
+            
+            # Calculate comprehensive metrics
+            evaluator = self.calculate_thesis_metrics(y_true, y_pred)
+            
+            # Generate all visualizations
+            self.generate_thesis_visualizations(y_true, y_pred, evaluator, train_losses, val_losses)
+            
+            print("\n" + "=" * 60)
+            print("✅ THESIS EVALUATION COMPLETE!")
+            print("=" * 60)
+            print("Generated files:")
+            print("\n📊 Metrics (LaTeX tables for thesis):")
+            print("  ✓ thesis_results/metrics_table.tex")
+            print("  ✓ thesis_results/per_timestep_metrics.tex")
+            print("\n📈 Visualizations (publication-quality figures):")
+            print("  ✓ thesis_figures/predicted_vs_actual.png")
+            print("  ✓ thesis_figures/residual_analysis.png")
+            print("  ✓ thesis_figures/forecast_horizon_performance.png")
+            print("  ✓ thesis_figures/training_history.png")
+            print("  ✓ thesis_figures/comprehensive_summary.png")
+            print("=" * 60)
+        
+        # Generate future predictions
         predictions, coords = self.predict_future_maps()
         
         # Export predictions to CSV
@@ -791,13 +980,13 @@ class GraphChlorophyllForecaster:
         self.generate_satellite_overlay_maps(predictions, coords)
         
         # Calculate some statistics
-        print(f"\n📊 PREDICTION STATISTICS:")
+        print(f"\n📊 FUTURE PREDICTION STATISTICS:")
         print(f"   Pixels predicted: {len(coords)}")
         print(f"   Future time steps: {predictions.shape[1]}")
         print(f"   Chlorophyll range: {predictions.min():.2f} - {predictions.max():.2f} mg/m³")
         print(f"   Mean prediction: {predictions.mean():.2f} mg/m³")
         
-        print(f"\n🎉 ANALYSIS COMPLETE!")
+        print(f"\n🎉 COMPLETE ANALYSIS FINISHED!")
         print("=" * 60)
         print("Generated files:")
         print("=" * 60)
