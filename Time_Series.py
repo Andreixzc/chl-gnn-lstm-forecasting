@@ -1,5 +1,5 @@
 """
-Grid-Based Chlorophyll-a Time Series Extraction for Três Marias Reservoir
+Grid-Based Chlorophyll-a Time Series Extraction for Trs Marias Reservoir
 REFACTORED: Exports one CSV file per day for easier visualization
 Author: Time Series Analysis for Water Quality Prediction
 """
@@ -116,7 +116,7 @@ class GridChlorophyllExtractor:
         # Convert to reflectance (0-1)
         reflectance = image.select(bands).multiply(0.0001)
         
-        # Convert to Rrs (reflectance / π)
+        # Convert to Rrs (reflectance / )
         rrs = reflectance.divide(math.pi)
         
         # Rename bands to match CHL-CONNECT requirements for MSI
@@ -276,8 +276,13 @@ class GridChlorophyllExtractor:
                 chl_concentration = chl_conn.Chl_comb[0] if hasattr(chl_conn.Chl_comb, '__len__') else chl_conn.Chl_comb
                 water_class = chl_conn.Class[0] if hasattr(chl_conn.Class, '__len__') else chl_conn.Class
                 
-                chl_values.append(chl_concentration)
-                class_values.append(water_class)
+                # Filter invalid values (outliers and negative values)
+                if chl_concentration > 100 or chl_concentration < 0:
+                    chl_values.append(np.nan)
+                    class_values.append(np.nan)
+                else:
+                    chl_values.append(chl_concentration)
+                    class_values.append(water_class)
                 
             except Exception as e:
                 print(f"Error calculating chlorophyll for row {idx}: {e}")
@@ -291,7 +296,7 @@ class GridChlorophyllExtractor:
             np.maximum(self.time_series_data['chlorophyll_a'], 0.01))
         
         valid_count = pd.notna(chl_values).sum()
-        print(f"\n✅ Calculated chlorophyll for {valid_count}/{total_rows} observations")
+        print(f"\n Calculated chlorophyll for {valid_count}/{total_rows} observations")
         
         return self.time_series_data
     
@@ -338,13 +343,13 @@ class GridChlorophyllExtractor:
             if 'chlorophyll_a' in daily_data.columns:
                 valid_chl = daily_data['chlorophyll_a'].dropna()
                 if len(valid_chl) > 0:
-                    print(f"  📅 {date_str}: {n_points:4d} points | "
-                          f"Chl-a: μ={valid_chl.mean():5.2f} mg/m³ "
+                    print(f"   {date_str}: {n_points:4d} points | "
+                          f"Chl-a: ={valid_chl.mean():5.2f} mg/m "
                           f"[{valid_chl.min():5.2f}, {valid_chl.max():5.2f}]")
                 else:
-                    print(f"  📅 {date_str}: {n_points:4d} points (no valid chlorophyll)")
+                    print(f"   {date_str}: {n_points:4d} points (no valid chlorophyll)")
             else:
-                print(f"  📅 {date_str}: {n_points:4d} points")
+                print(f"   {date_str}: {n_points:4d} points")
         
         # Print overall summary
         print(f"\n{'='*60}")
@@ -360,10 +365,10 @@ class GridChlorophyllExtractor:
             valid_chl = self.time_series_data['chlorophyll_a'].dropna()
             print(f"\nOverall chlorophyll statistics:")
             print(f"  Valid observations: {len(valid_chl)}")
-            print(f"  Range: {valid_chl.min():.3f} - {valid_chl.max():.3f} mg/m³")
-            print(f"  Mean: {valid_chl.mean():.3f} mg/m³")
-            print(f"  Median: {valid_chl.median():.3f} mg/m³")
-            print(f"  Std Dev: {valid_chl.std():.3f} mg/m³")
+            print(f"  Range: {valid_chl.min():.3f} - {valid_chl.max():.3f} mg/m")
+            print(f"  Mean: {valid_chl.mean():.3f} mg/m")
+            print(f"  Median: {valid_chl.median():.3f} mg/m")
+            print(f"  Std Dev: {valid_chl.std():.3f} mg/m")
         
         print(f"{'='*60}\n")
         
@@ -381,14 +386,14 @@ def main():
         # Get first feature's geometry
         coords = aoi_data['features'][0]['geometry']['coordinates']
         aoi = ee.Geometry.Polygon(coords)
-        print("✅ Loaded AOI from Area.json")
+        print(" Loaded AOI from Area.json")
     except Exception as e:
-        print(f"⚠️ Error loading Area.json: {e}")
+        print(f" Error loading Area.json: {e}")
         # Fallback to hardcoded coordinates
         aoi = ee.Geometry.Polygon([[[-45.559114, -18.954365], [-45.559114, -18.212409], 
                                    [-44.839706, -18.212409], [-44.839706, -18.954365], 
                                    [-45.559114, -18.954365]]])
-        print("✅ Using fallback AOI coordinates")
+        print(" Using fallback AOI coordinates")
     
     # Parameters
     extractor = GridChlorophyllExtractor(
@@ -401,7 +406,7 @@ def main():
     print("\n" + "="*60)
     print("Grid-Based Chlorophyll Extraction - Daily Snapshots")
     print("="*60)
-    print("Area: Três Marias Reservoir, Brazil")
+    print("Area: Trs Marias Reservoir, Brazil")
     print(f"Grid: {extractor.grid_points} points")
     print(f"Period: {extractor.start_date} to {extractor.end_date}")
     print("="*60 + "\n")
@@ -417,18 +422,18 @@ def main():
         try:
             chlorophyll_df = extractor.calculate_chlorophyll()
         except Exception as e:
-            print(f"⚠️ Chlorophyll calculation skipped: {e}")
+            print(f" Chlorophyll calculation skipped: {e}")
             chlorophyll_df = time_series_df
         
         # Step 4: Export results (one file per day)
         exported_files = extractor.export_results('daily_snapshots')
         
-        print(f"\n✅ Processing complete! Exported {len(exported_files)} daily files.")
-        
+        print(f"\n Processing complete! Exported {len(exported_files)} daily files.")
+    
         return extractor
     
     else:
-        print("❌ Failed to extract time series data.")
+        print(" Failed to extract time series data.")
         return None
 
 # Example usage
