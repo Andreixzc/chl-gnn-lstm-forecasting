@@ -8,7 +8,7 @@ This framework predicts chlorophyll-a concentration in freshwater reservoirs usi
 
 - **Chl-CONNECT Algorithm**: Chlorophyll-a estimation from Sentinel-2 satellite imagery
 - **Graph Neural Networks (GNN)**: Spatial relationship modeling between water pixels
-- **LSTM Networks**: Temporal pattern learning for time series forecasting
+- **BI-LSTM Networks**: Temporal pattern learning for time series forecasting
 - **High-Resolution Interpolation**: Smooth surface generation for visualization
 
 Applied to the Três Marias Reservoir in Brazil using Google Earth Engine for data acquisition and PyTorch Geometric for graph-based deep learning.
