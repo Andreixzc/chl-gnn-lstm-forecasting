@@ -43,7 +43,19 @@ Input: Chlorophyll-a time series (T × N × F)
 Output: Multi-step future predictions (N × steps)
 ```
 
-## Performance
+## Results
+
+### Prediction Outputs
+
+The framework generates high-resolution satellite overlay maps showing predicted chlorophyll-a concentrations:
+
+**Step 5 Prediction**
+![Satellite Overlay Step 5](assets/satellite_overlay_step_5.png)
+
+**Step 6 Prediction**
+![Satellite Overlay Step 6](assets/satellite_overlay_step_6.png)
+
+### Performance Metrics
 
 Model evaluation on validation set:
 
