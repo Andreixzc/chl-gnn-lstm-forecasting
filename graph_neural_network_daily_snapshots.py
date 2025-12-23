@@ -886,12 +886,12 @@ class GraphChlorophyllForecaster:
         return output_dir
     
     def visualize_future_maps(self, predictions, coords, save_path="graph_future_maps.png"):
-        """Create publication-quality future prediction maps using SatelliteMapGenerator"""
-        print(" Creating future prediction maps...")
+        """Generate satellite overlay maps for future predictions"""
+        print(" Creating satellite overlay maps...")
         
         n_steps = predictions.shape[1]
         
-        # Create output directory for individual maps
+        # Create output directory for satellite maps
         os.makedirs("satellite_maps", exist_ok=True)
         
         # Initialize map generator
@@ -900,81 +900,25 @@ class GraphChlorophyllForecaster:
             map_gen = SatelliteMapGenerator(aoi_path=self.aoi_path)
         except Exception as e:
             print(f" Failed to initialize map generator: {e}")
+            return
         
-        # Create subplot grid for the combined figure (using simple scatter for summary)
-        cols = 2
-        rows = (n_steps + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(15, 6*rows))
-        
-        if rows == 1 and cols == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
-        
+        # Generate individual satellite overlay maps for each time step
         for step in range(n_steps):
-            # Get predictions for this time step
             step_predictions = predictions[:, step]
+            indiv_save_path = os.path.join("satellite_maps", f"satellite_overlay_step_{step+1}.png")
             
-            # 1. Plot on the combined figure (Scatter)
-            ax = axes[step]
-            scatter = ax.scatter(
-                coords[:, 0], coords[:, 1],
-                c=step_predictions,
-                cmap='RdYlGn_r',
-                s=60, alpha=0.8,
-                vmin=predictions.min(),
-                vmax=predictions.max()
-            )
-            ax.set_xlabel('Longitude')
-            ax.set_ylabel('Latitude')
-            ax.set_title(f'Future Step {step + 1}')
-            ax.grid(True, alpha=0.3)
-            plt.colorbar(scatter, ax=ax, label='Chlorophyll-a (mg/m)')
-            
-            # 2. Generate High-Res Satellite Overlay Map
-            if map_gen:
-                indiv_save_path = os.path.join("satellite_maps", f"satellite_overlay_step_{step+1}.png")
-                try:
-                    map_gen.save_satellite_overlay_map(
-                        points=coords,
-                        values=step_predictions,
-                        output_path=indiv_save_path,
-                        title_suffix=f"Step {step+1}"
-                    )
-                    print(f"    Saved satellite overlay: {indiv_save_path}")
-                except Exception as e:
-                    print(f"    Failed to save overlay for step {step+1}: {e}")
-            else:
-                # Fallback to simple scatter if map generator fails
-                indiv_save_path = os.path.join("satellite_maps", f"prediction_map_step_{step+1}.png")
-                plt.figure(figsize=(10, 8))
-                plt.scatter(
-                    coords[:, 0], coords[:, 1],
-                    c=step_predictions,
-                    cmap='RdYlGn_r',
-                    s=80, alpha=0.8,
-                    vmin=predictions.min(),
-                    vmax=predictions.max()
+            try:
+                map_gen.save_satellite_overlay_map(
+                    points=coords,
+                    values=step_predictions,
+                    output_path=indiv_save_path,
+                    title_suffix=f"Step {step+1}"
                 )
-                plt.xlabel('Longitude')
-                plt.ylabel('Latitude')
-                plt.title(f'Future Prediction - Step {step + 1}\nTrs Marias Reservoir')
-                plt.colorbar(label='Chlorophyll-a (mg/m)')
-                plt.grid(True, alpha=0.3)
-                plt.savefig(indiv_save_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                print(f"    Saved simple map: {indiv_save_path}")
+                print(f"    Saved satellite overlay: {indiv_save_path}")
+            except Exception as e:
+                print(f"    Failed to save overlay for step {step+1}: {e}")
         
-        # Hide empty subplots in combined figure
-        for i in range(n_steps, len(axes)):
-            axes[i].axis('off')
-        
-        plt.suptitle('Graph Neural Network - Future Chlorophyll Predictions\nTrs Marias Reservoir', 
-                    fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f" Future maps saved: {save_path}")
+        print(f" All satellite maps generated in 'satellite_maps/' directory")
     
     def run_complete_analysis(self):
         """Run the complete graph neural network analysis"""
